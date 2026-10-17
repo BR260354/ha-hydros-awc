@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## 0.4.0-beta - 2026-10-03
+## 0.4.0 - 2026-10-16
 
 ### Changed (breaking)
 - Rebuilt on CoralVue's official [HYDROS Public API](https://www.coralvuehydros.com/api/) through the new `pyhydros2` library, replacing the unofficial Cognito/MQTT connection. Your Hydros username and password are no longer used: each device or collective needs a **provider key** and a **device key** (see "Getting your API keys" in the README).

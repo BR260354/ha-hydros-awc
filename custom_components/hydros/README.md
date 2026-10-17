@@ -11,7 +11,7 @@ This integration uses CoralVue's official [HYDROS Public API](https://www.coralv
 
 Then add the integration in Home Assistant (**Settings → Devices & services → Add integration → HA-Hydros**) and enter both keys.
 
-Treat both keys like passwords: don't share them or post them in issues or logs. Per CoralVue, API access is free through 2026, and stays free afterwards for up to 20 device keys per provider key.
+Treat both keys like passwords: don't share them or post them in issues or logs.
 
 **Upgrading from a version that used your Hydros username and password?** Home Assistant asks you to re-authenticate. Enter a provider/device key pair for each collective you had configured. Existing entities, and their history, are moved over wherever a matching entity exists in the new API.
 
@@ -19,8 +19,6 @@ Treat both keys like passwords: don't share them or post them in issues or logs.
 Custom Home Assistant integration for Hydros controllers. It connects to the Hydros cloud API to expose inputs, outputs, dosing history, and device health in Home Assistant.
 
 ![Example](../../dashboard.png)
-
-This integration is strictly designed for monitoring.
 
 ⚠️ DO NOT rely on this integration's automations for life-critical functions (e.g temperature control, pumps) or when equipment/property damage can occur (e.g flood).
 
