@@ -97,7 +97,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             raise ConfigEntryNotReady(f"Hydros setup failed for {name}: {err}") from err
 
         poller = await _async_build_poller(hass, client, device_id)
-        state_coordinator = HydrosStateCoordinator(hass, poller, name)
+        state_coordinator = HydrosStateCoordinator(hass, poller, client, name)
         await state_coordinator.async_config_entry_first_refresh()
 
         doser_names = [item.name for item in override_metadata if "dose" in item.commands]
@@ -137,3 +137,4 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Delete the stored polling sessions, which hold a bearer poll token."""
     for device_data in entry.data.get(CONF_DEVICES, []):
         await _session_store(hass, device_data[CONF_DEVICE_ID]).async_remove()
+

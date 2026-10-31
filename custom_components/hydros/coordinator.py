@@ -56,9 +56,15 @@ class _Pending:
 
 
 class HydrosStateCoordinator(DataUpdateCoordinator[DeviceState]):
-    """Polls the device-state session endpoint on a fixed interval."""
+    """Poll state and the explicit override document for one device."""
 
-    def __init__(self, hass: HomeAssistant, poller: DeviceStatePoller, device_name: str) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        poller: DeviceStatePoller,
+        client: HydrosClient,
+        device_name: str,
+    ) -> None:
         super().__init__(
             hass,
             _LOGGER,
@@ -66,6 +72,8 @@ class HydrosStateCoordinator(DataUpdateCoordinator[DeviceState]):
             update_interval=timedelta(seconds=STATE_UPDATE_INTERVAL_SECONDS),
         )
         self._poller = poller
+        self._client = client
+        self._override_snapshot: dict[str, Any] | None = None
         # Keyed by output name, or None for top-level fields such as ``mode``.
         self._pending: dict[str | None, _Pending] = {}
         self._last_success = 0.0
@@ -88,7 +96,32 @@ class HydrosStateCoordinator(DataUpdateCoordinator[DeviceState]):
         if state is None:
             raise UpdateFailed("Device has no recent state snapshot (offline or never reported)")
         self._last_success = time.monotonic()
-        return self._apply_pending(state)
+        # The state document may omit per-output `override` flags. Read the
+        # API's separate override document so scheduled (Auto) outputs and
+        # explicit On/Off overrides remain distinguishable.
+        try:
+            override_state = await self._client.get_overrides()
+        except HydrosAPIError as err:
+            # Override status is supplemental. Preserve the last successful
+            # snapshot and keep ordinary state sensors available on failure.
+            _LOGGER.debug("Could not refresh Hydros override state: %s", err)
+        else:
+            self._override_snapshot = override_state.overrides
+
+        state = self._apply_pending(state)
+        return self._apply_override_snapshot(state)
+
+    def _apply_override_snapshot(self, state: DeviceState) -> DeviceState:
+        """Attach explicit override modes keyed by the API's stable output key."""
+        if self._override_snapshot is None:
+            return state
+
+        raw = dict(state.raw)
+        raw["_hydros_override_state"] = {
+            key: {"desired": item.desired, "reported": item.reported}
+            for key, item in self._override_snapshot.items()
+        }
+        return DeviceState(raw)
 
     def _apply_pending(self, state: DeviceState) -> DeviceState:
         now = time.monotonic()
