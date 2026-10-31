@@ -46,6 +46,8 @@ class HydrosAWCActivityEvent(
                     "value": event.value,
                     "event_timestamp": event.timestamp,
                     "event_timestamp_ms": event.timestamp_ms,
+                    "fill_started_at": event.fill_started_at,
+                    "fill_runtime_seconds": event.fill_runtime_seconds,
                 },
             )
             # Write after each event so rapid Fill start/stop pairs remain
