@@ -27,7 +27,12 @@ from .const import (
     DOMAIN,
     PLATFORMS,
 )
-from .coordinator import HydrosDevice, HydrosDosingCoordinator, HydrosStateCoordinator
+from .coordinator import (
+    HydrosAWCEventCoordinator,
+    HydrosDevice,
+    HydrosDosingCoordinator,
+    HydrosStateCoordinator,
+)
 
 
 def _session_store(hass: HomeAssistant, device_id: str) -> Store[dict[str, Any]]:
@@ -105,6 +110,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Dosing totals are non-essential; a logs outage shouldn't block the device's controls.
         await dosing_coordinator.async_refresh()
 
+        awc_event_coordinator = HydrosAWCEventCoordinator(hass, client, name)
+        # AWC history is supplemental; log failures must not block controls.
+        await awc_event_coordinator.async_refresh()
+
         devices[device_id] = HydrosDevice(
             device_id=device_id,
             name=name,
@@ -112,6 +121,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             client=client,
             state_coordinator=state_coordinator,
             dosing_coordinator=dosing_coordinator,
+            awc_event_coordinator=awc_event_coordinator,
             override_metadata=override_metadata,
             log_series=log_series_discovery.series,
         )
@@ -137,4 +147,5 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Delete the stored polling sessions, which hold a bearer poll token."""
     for device_data in entry.data.get(CONF_DEVICES, []):
         await _session_store(hass, device_data[CONF_DEVICE_ID]).async_remove()
+
 

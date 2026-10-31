@@ -14,7 +14,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -36,7 +36,12 @@ from pyhydros2 import (
     Receipt,
 )
 
-from .const import DOMAIN, DOSING_UPDATE_INTERVAL_SECONDS, STATE_UPDATE_INTERVAL_SECONDS
+from .const import (
+    AWC_EVENT_UPDATE_INTERVAL_SECONDS,
+    DOMAIN,
+    DOSING_UPDATE_INTERVAL_SECONDS,
+    STATE_UPDATE_INTERVAL_SECONDS,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -193,6 +198,121 @@ class HydrosDosingCoordinator(DataUpdateCoordinator[dict[str, float]]):
             raise UpdateFailed(str(err)) from err
 
 
+@dataclass(frozen=True)
+class HydrosAWCEvent:
+    """One AWC operation transition reported by the Hydros event log."""
+
+    event_type: str
+    message: str
+    value: int
+    timestamp: str
+    timestamp_ms: int
+
+
+class HydrosAWCEventCoordinator(DataUpdateCoordinator[list[HydrosAWCEvent]]):
+    """Poll the AWC event series and deliver every new Fill/ATO transition."""
+
+    _INITIAL_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000
+    _QUERY_OVERLAP_MS = 5 * 60 * 1000
+    _SEEN_RETENTION_MS = 24 * 60 * 60 * 1000
+
+    def __init__(self, hass: HomeAssistant, client: HydrosClient, device_name: str) -> None:
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"Hydros {device_name} AWC events",
+            update_interval=timedelta(seconds=AWC_EVENT_UPDATE_INTERVAL_SECONDS),
+        )
+        self._client = client
+        self._last_query_end_ms: int | None = None
+        self._seen: set[tuple[int, str, int]] = set()
+
+    async def _async_update_data(self) -> list[HydrosAWCEvent]:
+        end_ms = int(dt_util.utcnow().timestamp() * 1000)
+        initial = self._last_query_end_ms is None
+        start_ms = (
+            max(0, end_ms - self._INITIAL_LOOKBACK_MS)
+            if initial
+            else max(0, self._last_query_end_ms - self._QUERY_OVERLAP_MS)
+        )
+        try:
+            result = await self._client.query_logs(
+                start_ms, end_ms, resolution="events", names=["AWC"]
+            )
+        except HydrosAPIError as err:
+            raise UpdateFailed(f"Could not read Hydros AWC event history: {err}") from err
+
+        series = result.series.get("AWC")
+        parsed = sorted(
+            (
+                event
+                for point in (series.points if series is not None else [])
+                if (event := _parse_awc_event_point(point)) is not None
+            ),
+            key=lambda event: (event.timestamp_ms, event.message, event.value),
+        )
+
+        # On startup, seed the de-duplication window without replaying old log
+        # events into automations. Later polls deliver each newly-seen record.
+        if initial:
+            self._seen.update(_awc_event_key(event) for event in parsed)
+            self._last_query_end_ms = end_ms
+            return []
+
+        new_events = [event for event in parsed if _awc_event_key(event) not in self._seen]
+        self._seen.update(_awc_event_key(event) for event in new_events)
+        cutoff_ms = end_ms - self._SEEN_RETENTION_MS
+        self._seen = {key for key in self._seen if key[0] >= cutoff_ms}
+        self._last_query_end_ms = end_ms
+        return new_events
+
+
+def _parse_awc_event_point(point: tuple[Any, ...]) -> HydrosAWCEvent | None:
+    """Parse the documented AWC point shape: [time_ms, value, message]."""
+    if len(point) < 3:
+        return None
+
+    timestamp_ms = _parse_log_timestamp(point[0])
+    message = str(point[2]).strip()
+    if timestamp_ms is None or message not in {"ATO", "Fill"}:
+        return None
+
+    try:
+        value = int(point[1])
+    except (TypeError, ValueError):
+        return None
+    if value not in {0, 1}:
+        return None
+
+    operation = message.lower()
+    action = "started" if value == 1 else "stopped"
+    timestamp = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).isoformat()
+    return HydrosAWCEvent(
+        event_type=f"{operation}_{action}",
+        message=message,
+        value=value,
+        timestamp=timestamp,
+        timestamp_ms=timestamp_ms,
+    )
+
+
+def _parse_log_timestamp(value: Any) -> int | None:
+    """Accept the API's epoch-millisecond timestamps and ISO timestamp form."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        parsed = dt_util.parse_datetime(value)
+        if parsed is not None:
+            return int(parsed.timestamp() * 1000)
+    return None
+
+
+def _awc_event_key(event: HydrosAWCEvent) -> tuple[int, str, int]:
+    return (event.timestamp_ms, event.message, event.value)
+
+
 def _raise_if_not_applied(receipt: Receipt | None, *, command: bool) -> None:
     """Raise if a receipted write (``receipt=1``) wasn't confirmed by the
     device itself within the API's ~5 s wait.
@@ -236,6 +356,7 @@ class HydrosDevice:
     client: HydrosClient
     state_coordinator: HydrosStateCoordinator
     dosing_coordinator: HydrosDosingCoordinator
+    awc_event_coordinator: HydrosAWCEventCoordinator
     device_type: str = ""
     override_metadata: list[OverrideMetadataEntry] = field(default_factory=list)
     log_series: list[LogSeriesInfo] = field(default_factory=list)
@@ -306,3 +427,4 @@ class HydrosDevice:
             self.state_coordinator.apply_optimistic(
                 None, {"mode": command}, lambda raw: raw.get("mode") == command
             )
+
