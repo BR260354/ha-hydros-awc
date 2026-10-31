@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.4.1 - 2026-10-31
+
+### Added
+- Add an AWC Activity event entity backed by the Hydros API's AWC event log, with ATO, Drain, and Fill start/stop events.
+- Include Fill and Drain start timestamps and runtime on matching stop events so Home Assistant automations can track water usage.
+
 ## 0.4.0 - 2026-10-16
 
 ### Changed (breaking)
