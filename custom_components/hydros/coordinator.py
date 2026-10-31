@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -209,10 +209,12 @@ class HydrosAWCEvent:
     timestamp_ms: int
     fill_started_at: str | None = None
     fill_runtime_seconds: float | None = None
+    drain_started_at: str | None = None
+    drain_runtime_seconds: float | None = None
 
 
 class HydrosAWCEventCoordinator(DataUpdateCoordinator[list[HydrosAWCEvent]]):
-    """Poll the AWC event series and deliver every new Fill/ATO transition."""
+    """Poll the AWC event series and deliver new ATO, Drain, and Fill transitions."""
 
     _INITIAL_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000
     _QUERY_OVERLAP_MS = 5 * 60 * 1000
@@ -228,7 +230,7 @@ class HydrosAWCEventCoordinator(DataUpdateCoordinator[list[HydrosAWCEvent]]):
         self._client = client
         self._last_query_end_ms: int | None = None
         self._seen: set[tuple[int, str, int]] = set()
-        self._active_fill_started_ms: int | None = None
+        self._active_started_ms: dict[str, int] = {}
 
     async def _async_update_data(self) -> list[HydrosAWCEvent]:
         end_ms = int(dt_util.utcnow().timestamp() * 1000)
@@ -259,7 +261,7 @@ class HydrosAWCEventCoordinator(DataUpdateCoordinator[list[HydrosAWCEvent]]):
         # events into automations. Later polls deliver each newly-seen record.
         if initial:
             self._seen.update(_awc_event_key(event) for event in parsed)
-            self._track_fill_runtime(parsed)
+            self._track_operation_runtime(parsed)
             self._last_query_end_ms = end_ms
             return []
 
@@ -268,31 +270,37 @@ class HydrosAWCEventCoordinator(DataUpdateCoordinator[list[HydrosAWCEvent]]):
         cutoff_ms = end_ms - self._SEEN_RETENTION_MS
         self._seen = {key for key in self._seen if key[0] >= cutoff_ms}
         self._last_query_end_ms = end_ms
-        return self._track_fill_runtime(new_events)
+        return self._track_operation_runtime(new_events)
 
-    def _track_fill_runtime(
+    def _track_operation_runtime(
         self, events: list[HydrosAWCEvent]
     ) -> list[HydrosAWCEvent]:
-        """Pair Fill stop records with their exact preceding start timestamp."""
+        """Pair Drain and Fill stop records with their preceding start times."""
         delivered: list[HydrosAWCEvent] = []
         for event in events:
-            if event.message == "Fill" and event.value == 1:
-                self._active_fill_started_ms = event.timestamp_ms
+            if event.message not in {"Drain", "Fill"}:
                 delivered.append(event)
                 continue
-            if event.message == "Fill" and event.value == 0:
-                start_ms = self._active_fill_started_ms
+
+            operation = event.message.lower()
+            if event.value == 1:
+                self._active_started_ms[operation] = event.timestamp_ms
+                delivered.append(event)
+                continue
+
+            if event.value == 0:
+                start_ms = self._active_started_ms.pop(operation, None)
                 if start_ms is not None and start_ms <= event.timestamp_ms:
-                    event = HydrosAWCEvent(
-                        event_type=event.event_type,
-                        message=event.message,
-                        value=event.value,
-                        timestamp=event.timestamp,
-                        timestamp_ms=event.timestamp_ms,
-                        fill_started_at=_format_log_timestamp(start_ms),
-                        fill_runtime_seconds=(event.timestamp_ms - start_ms) / 1000,
+                    event = replace(
+                        event,
+                        **{
+                            f"{operation}_started_at": _format_log_timestamp(start_ms),
+                            f"{operation}_runtime_seconds": (
+                                event.timestamp_ms - start_ms
+                            )
+                            / 1000,
+                        },
                     )
-                self._active_fill_started_ms = None
             delivered.append(event)
         return delivered
 
@@ -304,7 +312,7 @@ def _parse_awc_event_point(point: tuple[Any, ...]) -> HydrosAWCEvent | None:
 
     timestamp_ms = _parse_log_timestamp(point[0])
     message = str(point[2]).strip()
-    if timestamp_ms is None or message not in {"ATO", "Fill"}:
+    if timestamp_ms is None or message not in {"ATO", "Drain", "Fill"}:
         return None
 
     try:
