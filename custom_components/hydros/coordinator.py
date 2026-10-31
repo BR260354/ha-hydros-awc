@@ -241,8 +241,10 @@ class HydrosAWCEventCoordinator(DataUpdateCoordinator[list[HydrosAWCEvent]]):
             else max(0, self._last_query_end_ms - self._QUERY_OVERLAP_MS)
         )
         try:
+            # AWC is a boolean Output series with message labels, not an event sensor.
+            # The API exposes its timestamped state/message points at 10m resolution.
             result = await self._client.query_logs(
-                start_ms, end_ms, resolution="events", names=["AWC"]
+                start_ms, end_ms, resolution="10m", names=["AWC"]
             )
         except HydrosAPIError as err:
             raise UpdateFailed(f"Could not read Hydros AWC event history: {err}") from err
